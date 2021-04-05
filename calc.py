@@ -21,12 +21,12 @@ from model import (
 )
 
 # First year of tax year
-tax_year = 2020
+tax_year = 2019
 # Allowance is £12000 for 2019/20
 # https://www.gov.uk/guidance/capital-gains-tax-rates-and-allowances#tax-free-allowances-for-capital-gains-tax
 capital_gain_allowance = 12000
 # Schwab transactions
-transactions_file = "sample_transactions.csv"
+transaction_files = ["sample_transactions.csv", "sample_transactions.csv"]
 # Montly GBP/USD history from
 # https://www.gov.uk/government/collections/exchange-rates-for-customs-and-vat
 gbp_history_file = "GBP_USD_monthly_history.csv"
@@ -98,12 +98,16 @@ def add_to_list(
 
 
 def read_broker_transactions() -> List[BrokerTransaction]:
-    with open(transactions_file) as csv_file:
-        lines = [line for line in csv.reader(csv_file)]
-        lines = lines[2:-1]
-        transactions = [BrokerTransaction(row) for row in lines]
-        transactions.reverse()
-        return transactions
+    transactions = []
+    for transactions_file in transaction_files:
+        with open(transactions_file) as csv_file:
+            lines = [line for line in csv.reader(csv_file)]
+            lines = lines[2:-1]
+            transaction = [BrokerTransaction(row) for row in lines]
+            transaction.reverse()
+        transactions += transaction
+    assert(len(transactions) > 0)
+    return transactions
 
 
 def read_gbp_prices_history() -> None:
