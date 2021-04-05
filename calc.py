@@ -21,12 +21,12 @@ from model import (
 )
 
 # First year of tax year
-tax_year = 2019
+tax_year = 2020
 # Allowance is £12000 for 2019/20
 # https://www.gov.uk/guidance/capital-gains-tax-rates-and-allowances#tax-free-allowances-for-capital-gains-tax
 capital_gain_allowance = 12000
 # Schwab transactions
-transactions_file = "transactions.csv"
+transactions_file = "sample_transactions.csv"
 # Montly GBP/USD history from
 # https://www.gov.uk/government/collections/exchange-rates-for-customs-and-vat
 gbp_history_file = "GBP_USD_monthly_history.csv"
