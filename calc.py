@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 
-import csv
 import datetime
 import decimal
 import sys
+from collections import defaultdict
 from decimal import Decimal
 from typing import Dict, List, Tuple
 
 import render_latex
 from dates import date_from_index, date_to_index, internal_start_date, is_date
+from exceptions import (
+    AmountMissingError,
+    CalculatedAmountDiscrepancy,
+    CalculationError,
+    ExchangeRateMissingError,
+    InvalidTransactionError,
+    PriceMissingError,
+    QuantityNotPositiveError,
+    SymbolMissingError,
+)
 from misc import round_decimal
 from model import (
     ActionType,
@@ -16,17 +26,30 @@ from model import (
     CalculationEntry,
     CalculationLog,
     DateIndex,
-    InitialPricesEntry,
     RuleType,
+)
+from parsers import (
+    read_broker_transactions,
+    read_gbp_prices_history,
+    read_initial_prices,
 )
 
 # First year of tax year
-tax_year = 2019
-# Allowance is £12000 for 2019/20
+tax_year = 2020
+# Allowances
 # https://www.gov.uk/guidance/capital-gains-tax-rates-and-allowances#tax-free-allowances-for-capital-gains-tax
-capital_gain_allowance = 12000
+capital_gain_allowances = {
+    2014: 11000,
+    2015: 11100,
+    2016: 11100,
+    2017: 11300,
+    2018: 11700,
+    2019: 12000,
+    2020: 12300,
+}
 # Schwab transactions
 transaction_files = ["sample_transactions.csv"]
+schwab_transactions_file = "schwab_transactions.csv"
 # Montly GBP/USD history from
 # https://www.gov.uk/government/collections/exchange-rates-for-customs-and-vat
 gbp_history_file = "GBP_USD_monthly_history.csv"
@@ -51,7 +74,7 @@ def gbp_price(date: datetime.date) -> Decimal:
     if index in gbp_history:
         return gbp_history[index]
     else:
-        raise Exception(f"No GBP/USD price for {date}")
+        raise ExchangeRateMissingError("USD", date)
 
 
 def get_initial_price(date: datetime.date, symbol: str) -> Decimal:
@@ -60,11 +83,16 @@ def get_initial_price(date: datetime.date, symbol: str) -> Decimal:
     if date_index in initial_prices and symbol in initial_prices[date_index]:
         return initial_prices[date_index][symbol]
     else:
-        raise Exception(f"No {symbol} price for {date}")
+        raise ExchangeRateMissingError(symbol, date)
 
 
-def convert_to_gbp(amount: Decimal, date: datetime.date) -> Decimal:
-    return amount / gbp_price(date)
+def convert_to_gbp(amount: Decimal, currency: str, date: datetime.date) -> Decimal:
+    if currency == "USD":
+        return amount / gbp_price(date)
+    elif currency == "GBP":
+        return amount
+    else:
+        raise ExchangeRateMissingError(currency, date)
 
 
 def date_in_tax_year(date: datetime.date) -> bool:
@@ -97,41 +125,6 @@ def add_to_list(
     )
 
 
-def read_broker_transactions() -> List[BrokerTransaction]:
-    transactions = []
-    for transactions_file in transaction_files:
-        with open(transactions_file) as csv_file:
-            lines = [line for line in csv.reader(csv_file)]
-            lines = lines[2:-1]
-            transaction = [BrokerTransaction(row) for row in lines]
-            transaction.reverse()
-        transactions += transaction
-    assert(len(transactions) > 0)
-    return transactions
-
-
-def read_gbp_prices_history() -> None:
-    with open(gbp_history_file) as csv_file:
-        lines = [line for line in csv.reader(csv_file)]
-        lines = lines[1:]
-        for row in lines:
-            assert len(row) == 2
-            price_date = datetime.datetime.strptime(row[0], "%m/%Y").date()
-            gbp_history[date_to_index(price_date)] = Decimal(row[1])
-
-
-def read_initial_prices() -> None:
-    with open(initial_prices_file) as csv_file:
-        lines = [line for line in csv.reader(csv_file)]
-        lines = lines[1:]
-        for row in lines:
-            entry = InitialPricesEntry(row)
-            date_index = date_to_index(entry.date)
-            if date_index not in initial_prices:
-                initial_prices[date_index] = {}
-            initial_prices[date_index][entry.symbol] = entry.price
-
-
 def add_acquisition(
     portfolio: Dict[str, Decimal],
     acquisition_list: HmrcTransactionLog,
@@ -139,33 +132,36 @@ def add_acquisition(
 ) -> None:
     symbol = transaction.symbol
     quantity = transaction.quantity
-    assert symbol != ""
-    assert quantity is not None
-    assert quantity > 0
+    if symbol is None:
+        raise SymbolMissingError(transaction)
+    if quantity is None or quantity <= 0:
+        raise QuantityNotPositiveError(transaction)
     # This is basically only for data validation
     if symbol in portfolio:
         portfolio[symbol] += quantity
     else:
         portfolio[symbol] = quantity
     # Add to acquisition_list to apply same day rule
-    action_type = ActionType.from_str(transaction.action)
-    if action_type in [ActionType.STOCK_ACTIVITY, ActionType.SPIN_OFF]:
+    if transaction.action in [ActionType.STOCK_ACTIVITY, ActionType.SPIN_OFF]:
         amount = quantity * get_initial_price(transaction.date, symbol)
     else:
-        assert transaction.amount is not None
-        assert transaction.price is not None
+        if transaction.amount is None:
+            raise AmountMissingError(transaction)
+        if transaction.price is None:
+            raise PriceMissingError(transaction)
         calculated_amount = round_decimal(
             quantity * transaction.price + transaction.fees, 2
         )
+        if transaction.amount != -calculated_amount:
+            raise CalculatedAmountDiscrepancy(transaction, -calculated_amount)
         amount = -transaction.amount
-        assert calculated_amount == amount, f"{calculated_amount} != {amount}"
     add_to_list(
         acquisition_list,
         date_to_index(transaction.date),
         symbol,
         quantity,
-        convert_to_gbp(amount, transaction.date),
-        convert_to_gbp(transaction.fees, transaction.date),
+        convert_to_gbp(amount, transaction.currency, transaction.date),
+        convert_to_gbp(transaction.fees, transaction.currency, transaction.date),
     )
 
 
@@ -176,30 +172,41 @@ def add_disposal(
 ) -> None:
     symbol = transaction.symbol
     quantity = transaction.quantity
-    assert symbol != ""
-    assert symbol in portfolio, "reversed order?"
-    assert quantity is not None
-    assert quantity > 0
-    assert portfolio[symbol] >= quantity
+    if symbol is None:
+        raise SymbolMissingError(transaction)
+    if symbol not in portfolio:
+        raise InvalidTransactionError(
+            transaction, "Tried to sell not owned symbol, reversed order?"
+        )
+    if quantity is None or quantity <= 0:
+        raise QuantityNotPositiveError(transaction)
+    if portfolio[symbol] < quantity:
+        raise InvalidTransactionError(
+            transaction,
+            f"Tried to sell more than the available balance({portfolio[symbol]})",
+        )
     # This is basically only for data validation
     portfolio[symbol] -= quantity
     if portfolio[symbol] == 0:
         del portfolio[symbol]
     # Add to disposal_list to apply same day rule
-    assert transaction.amount is not None
-    assert transaction.price is not None
+    if transaction.amount is None:
+        raise AmountMissingError(transaction)
+    if transaction.price is None:
+        raise PriceMissingError(transaction)
     amount = transaction.amount
     calculated_amount = round_decimal(
         quantity * transaction.price - transaction.fees, 2
     )
-    assert calculated_amount == amount, f"{calculated_amount} != {amount}"
+    if amount != calculated_amount:
+        raise CalculatedAmountDiscrepancy(transaction, calculated_amount)
     add_to_list(
         disposal_list,
         date_to_index(transaction.date),
         symbol,
         quantity,
-        convert_to_gbp(amount, transaction.date),
-        convert_to_gbp(transaction.fees, transaction.date),
+        convert_to_gbp(amount, transaction.currency, transaction.date),
+        convert_to_gbp(transaction.fees, transaction.currency, transaction.date),
     )
 
 
@@ -210,7 +217,8 @@ def swift_date(date: datetime.date) -> str:
 def convert_to_hmrc_transactions(
     transactions: List[BrokerTransaction],
 ) -> Tuple[HmrcTransactionLog, HmrcTransactionLog]:
-    balance = Decimal(0)
+    # We keep a balance per broker,currency pair
+    balance: Dict[Tuple[str, str], Decimal] = defaultdict(lambda: Decimal(0))
     dividends = Decimal(0)
     dividends_tax = Decimal(0)
     interest = Decimal(0)
@@ -219,29 +227,36 @@ def convert_to_hmrc_transactions(
     acquisition_list: HmrcTransactionLog = {}
     disposal_list: HmrcTransactionLog = {}
 
-    for transaction in transactions:
-        assert balance >= 0, "balance can't be negative"
-        action_type = ActionType.from_str(transaction.action)
-        if action_type is ActionType.TRANSFER:
-            assert transaction.amount is not None
-            balance += transaction.amount
-        elif action_type is ActionType.BUY:
-            assert transaction.amount is not None
-            balance += transaction.amount
+    for i, transaction in enumerate(transactions):
+        new_balance = balance[(transaction.broker, transaction.currency)]
+        if transaction.action is ActionType.TRANSFER:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
+        elif transaction.action is ActionType.BUY:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             add_acquisition(portfolio, acquisition_list, transaction)
-        elif action_type is ActionType.SELL:
-            assert transaction.amount is not None
-            balance += transaction.amount
+        elif transaction.action is ActionType.SELL:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             add_disposal(portfolio, disposal_list, transaction)
             # TODO: cleanup
             if date_in_tax_year(transaction.date):
-                total_sells += convert_to_gbp(transaction.amount, transaction.date)
-        elif action_type is ActionType.FEE:
-            assert transaction.amount is not None
-            balance += transaction.amount
+                total_sells += convert_to_gbp(
+                    transaction.amount, transaction.currency, transaction.date
+                )
+        elif transaction.action is ActionType.FEE:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             transaction.fees = -transaction.amount
             transaction.quantity = Decimal(0)
-            gbp_fees = convert_to_gbp(transaction.fees, transaction.date)
+            gbp_fees = convert_to_gbp(
+                transaction.fees, transaction.currency, transaction.date
+            )
             add_to_list(
                 acquisition_list,
                 date_to_index(transaction.date),
@@ -250,30 +265,50 @@ def convert_to_hmrc_transactions(
                 gbp_fees,
                 gbp_fees,
             )
-        elif action_type in [ActionType.STOCK_ACTIVITY, ActionType.SPIN_OFF]:
+        elif transaction.action in [ActionType.STOCK_ACTIVITY, ActionType.SPIN_OFF]:
             add_acquisition(portfolio, acquisition_list, transaction)
-        elif action_type in [ActionType.DIVIDEND, ActionType.CAPITAL_GAIN]:
-            assert transaction.amount is not None
-            balance += transaction.amount
+        elif transaction.action in [ActionType.DIVIDEND, ActionType.CAPITAL_GAIN]:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             if date_in_tax_year(transaction.date):
-                dividends += convert_to_gbp(transaction.amount, transaction.date)
-        elif action_type in [ActionType.TAX, ActionType.ADJUSTMENT]:
-            assert transaction.amount is not None
-            balance += transaction.amount
+                dividends += convert_to_gbp(
+                    transaction.amount, transaction.currency, transaction.date
+                )
+        elif transaction.action in [ActionType.TAX, ActionType.ADJUSTMENT]:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             if date_in_tax_year(transaction.date):
-                dividends_tax += convert_to_gbp(transaction.amount, transaction.date)
-        elif action_type is ActionType.INTEREST:
-            assert transaction.amount is not None
-            balance += transaction.amount
+                dividends_tax += convert_to_gbp(
+                    transaction.amount, transaction.currency, transaction.date
+                )
+        elif transaction.action is ActionType.INTEREST:
+            if transaction.amount is None:
+                raise AmountMissingError(transaction)
+            new_balance += transaction.amount
             if date_in_tax_year(transaction.date):
-                interest += convert_to_gbp(transaction.amount, transaction.date)
+                interest += convert_to_gbp(
+                    transaction.amount, transaction.currency, transaction.date
+                )
         else:
-            raise Exception(f"Action not processed: {action_type}")
+            raise InvalidTransactionError(
+                transaction, f"Action not processed({transaction.action})"
+            )
+        if new_balance < 0:
+            msg = f"Reached a negative balance({new_balance})"
+            msg += f" for broker {transaction.broker} ({transaction.currency})"
+            msg += " after processing the following transactions:\n"
+            msg += "\n".join(map(str, transactions[: i + 1]))
+            raise CalculationError(msg)
+        balance[(transaction.broker, transaction.currency)] = new_balance
     print("First pass completed")
     print("Final portfolio:")
     for stock, quantity in portfolio.items():
         print(f"  {stock}: {round_decimal(quantity, 2)}")
-    print(f"Final balance: ${balance}")
+    print("Final balance:")
+    for (broker, currency), amount in balance.items():
+        print(f"  {broker}: {round_decimal(amount, 2)} ({currency})")
     print(f"Dividends: £{round_decimal(dividends, 2)}")
     print(f"Dividend taxes: £{round_decimal(-dividends_tax, 2)}")
     print(f"Interest: £{round_decimal(interest, 2)}")
@@ -617,9 +652,13 @@ def calculate_capital_gain(
     print(f"Capital gain: £{capital_gain}")
     print(f"Capital loss: £{-capital_loss}")
     print(f"Total capital gain: £{capital_gain + capital_loss}")
-    print(
-        f"Taxable capital gain: £{max(Decimal(0), capital_gain + capital_loss - capital_gain_allowance)}"
-    )
+    if tax_year in capital_gain_allowances:
+        allowance = capital_gain_allowances[tax_year]
+        print(
+            f"Taxable capital gain: £{max(Decimal(0), capital_gain + capital_loss - allowance)}"
+        )
+    else:
+        print("WARNING: Missing allowance for this tax year")
     print("")
     return calculation_log
 
@@ -628,9 +667,10 @@ def main() -> int:
     # Throw exception on accidental float usage
     decimal.getcontext().traps[decimal.FloatOperation] = True
     # Read data from input files
-    broker_transactions = read_broker_transactions()
-    read_gbp_prices_history()
-    read_initial_prices()
+    broker_transactions = read_broker_transactions(schwab_transactions_file)
+    global gbp_history, initial_prices
+    gbp_history = read_gbp_prices_history(gbp_history_file)
+    initial_prices = read_initial_prices(initial_prices_file)
     # First pass converts broker transactions to HMRC transactions.
     # This means applying same day rule and collapsing all transactions with
     # same type in the same day.
