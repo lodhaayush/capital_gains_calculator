@@ -1,0 +1,23 @@
+First pass completed
+Final portfolio:
+Final balance: $10403.00
+Dividends: £0.00
+Dividend taxes: £0.00
+Interest: £0.00
+Disposal proceeds: £7855.16
+
+WARNING: Bed and breakfasting for FOO. Disposed on 2020-03-03 and acquired again on 2020-03-06
+
+Second pass completed
+Portfolio at the end of 2019/2020 tax year:
+For tax year 2019/2020:
+Number of disposals: 2
+Disposal proceeds: £7855.16
+Allowable costs: £7544.01
+Capital gain: £547.87
+Capital loss: £236.72
+Total capital gain: £311.15
+Taxable capital gain: £0
+
+Generate calculations report
+All done!

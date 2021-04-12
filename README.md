@@ -1,12 +1,12 @@
 # UK capital gains calculator
 
-[![CI](https://github.com/KapJI/capital_gains_calculator/workflows/CI/badge.svg)](https://github.com/KapJI/capital_gains_calculator/actions)
+[![CI](https://github.com/lodhaayush/capital_gains_calculator/workflows/CI/badge.svg)](https://github.com/lodhaayush/capital_gains_calculator/actions)
 
 Calculate capital gains tax by transaction history exported from Schwab and generate PDF report with calculations. Automatically convert all prices to GBP and apply HMRC rules to calculate capital gains tax: "same day" rule, "bed and breakfast" rule, section 104 holding.
 
 ## Report example
 
-[calculations_example.pdf](https://github.com/KapJI/capital_gains_calculator/blob/main/calculations_example.pdf)
+[calculations_example.pdf](https://github.com/lodhaayush/capital_gains_calculator/blob/main/calculations_example.pdf)
 
 ## Setup
 
@@ -24,9 +24,16 @@ pip3 install jinja2
 - `initial_prices.csv`: stock prices in USD at the moment of vesting, split, etc.
 - Run `python3 calc.py`
 
+## Testing
+```shell
+python3 calc.py > test_output.txt
+diff test_output.txt sample_output.txt
+```
+If you are adding a new feature, please update `sample_transactions.csv` and `sample_output.txt`.
+
 ## Disclaimer
 
-Please be aware that I'm not a tax adviser so use this data at your own risk.
+Please be aware that I'm not a tax adviser so use this software application at your own risk.
 
 ## Contribute
 

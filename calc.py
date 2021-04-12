@@ -26,7 +26,7 @@ tax_year = 2019
 # https://www.gov.uk/guidance/capital-gains-tax-rates-and-allowances#tax-free-allowances-for-capital-gains-tax
 capital_gain_allowance = 12000
 # Schwab transactions
-transaction_files = ["sample_transactions.csv", "sample_transactions.csv"]
+transaction_files = ["sample_transactions.csv"]
 # Montly GBP/USD history from
 # https://www.gov.uk/government/collections/exchange-rates-for-customs-and-vat
 gbp_history_file = "GBP_USD_monthly_history.csv"
